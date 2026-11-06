@@ -1,0 +1,33 @@
+[project]
+name = "live2d-modifier"
+version = "0.1.0"
+description = "Agent-driven Live2D appearance editing: gradients, patterns and existing rig preservation"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["numpy", "pillow", "opencv-python-headless", "py-moc3", "playwright"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "build"]
+
+[project.scripts]
+l2d-mod = "live2d_modifier.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+live2d_modifier = ["py.typed", "js/*.js", "web/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["model: private external model required", "browser: browser and user-provided Core required"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F"]
