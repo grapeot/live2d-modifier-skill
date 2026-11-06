@@ -31,6 +31,8 @@ uv run l2d-mod --help
 
 ## CLI 命令速查
 
+实际参数、配方字段及残差孔洞坐标见 [配方契约](../../docs/recipes.md)。先读该文件再构造 JSON，不猜字段。开始一次新风格后，保留 capture、编辑图、配方与命令账本；已有配方中的 ID 只适用于原模型，不能粘贴给另一套模型。
+
 示例统一使用 `/path/to/model`、`work/`、`PartExample`、`ArtMeshExample` 等占位符。`render` 与 `transfer` 的详细参数请运行 `uv run l2d-mod render --help` 和 `uv run l2d-mod transfer --help` 查看，不要猜测未定义的参数。
 
 - `inventory`：盘点模型的部件（Part）、网格（ArtMesh）、参数范围与贴图页。
@@ -40,12 +42,14 @@ uv run l2d-mod --help
 - `pick`：查询渲染图指定像素位置对应的 `PartExample` 与 `ArtMeshExample`。
 - `conflicts`：检测共用同一块贴图 UV 区域的网格冲突。
 - `variant`：在新目录生成模型变体。支持修改参数默认值、`hide`/`unmask`/`blend`、`affine`/`tint`、`texture`/`split` 等原位操作；日常改款默认只调用完成外观修改所需的操作。
-- `page`：新增或克隆贴图页，配合贴图拆分实现冲突解耦。
+- `page`：生成方向测试图，或从纯色背景配饰图抠图；接入模型用 `variant texture`。
 - `transfer`：对齐重绘图像，执行部件级明暗颜色映射拟合与 UV 残差回投。
 - `texels`：对贴图局部区域做确定性的像素级修补或微调。
 - `moc check`：检查 `.moc3` 与 `.model3.json` 的结构完整性与贴图引用。
 - `vts`：以新模型名与新 `ModelID` 安装到 VTube Studio。
 - `serve`：启动本地浏览器预览服务。
+- `motion`：导出连续运动 PNG 帧，检查转头过程中而不只是端点的撕裂。
+- `package`：仅打包用户模型所需资源，输出自包含 zip。
 
 ---
 
@@ -56,22 +60,23 @@ uv run l2d-mod --help
 确认原模型目录（如 `/path/to/model`）、风格描述或参考图路径，以及独立工作目录（如 `work/`）。**原模型目录全程保持只读，禁止直接覆盖原模型文件。**
 
 ```bash
-uv run l2d-mod inventory /path/to/model -o work/inventory.json
+uv run l2d-mod inventory /path/to/model -o work/inventory
 uv run l2d-mod sheet /path/to/model -o work/orig_sheet.png
-uv run l2d-mod conflicts /path/to/model -o work/conflicts.json
+uv run l2d-mod capture /path/to/model work/baseline --size 1152 2048
+uv run l2d-mod conflicts work/baseline
 ```
 
 若需要确认画面某处属于哪个部件或网格，先用 `render` 出图，再用 `pick` 查询屏幕坐标对应的 `PartExample` 或 `ArtMeshExample`。
 
 ### 第 2 步：调整原生开关与拆解共享贴图冲突
 
-根据 `inventory.json` 与 `conflicts.json` 的结果，判断是否需要在采集前生成整理后的基准变体模型 `work/base_model`：
+根据 `work/inventory/inventory.json` 与 `conflicts` 的输出 的结果，判断是否需要在采集前生成整理后的基准变体模型 `work/base_model`：
 
 1. **原生参数开关与显隐**：如果模型自带外套切换、配饰开关等参数，可通过 `variant` 修改参数默认值，或用 `hide` 隐藏当前风格不需要的部件；若借用已有配饰槽位，保持其原有变形器绑定不变。
 2. **共享纹理冲突拆页**：检查 `conflicts.json`。例如当画师署名网格 `ArtMeshExample` 需要保留原貌，却与待重绘的服装共用同一处贴图时，使用 `variant`（`texture`/`split`）或 `page` 将冲突网格拆分到独立贴图页，避免后续重绘服装时污染署名。
 
 ```bash
-uv run l2d-mod variant /path/to/model -c work/variant_config.json -o work/base_model
+uv run l2d-mod variant /path/to/model work/base_model work/variant_config.json
 uv run l2d-mod moc check work/base_model
 ```
 
@@ -80,10 +85,11 @@ uv run l2d-mod moc check work/base_model
 对基准模型执行高分辨率全身与头部近景 `capture`，同时记录屏幕到贴图 UV 的对应关系：
 
 ```bash
-uv run l2d-mod capture work/base_model -o work/captures
+uv run l2d-mod capture work/base_model work/body --size 1152 2048
+uv run l2d-mod capture work/base_model work/head --size 2048 2048 --zoom 3,0.5,0.2
 ```
 
-将 `work/captures` 中导出的全身与头部渲染 PNG 交给外部图像编辑器重绘（可使用 Agent 已安装的图像生成/编辑 Skill，或交由用户人工编辑；本项目不绑定特定计费 API）。
+将 `work/body_in.png`、`work/head_in.png` 这些导出的全身与头部渲染 PNG 交给外部图像编辑器重绘（可使用 Agent 已安装的图像生成/编辑 Skill，或交由用户人工编辑；本项目不绑定特定计费 API）。
 
 **图像编辑硬性约束**：
 - 外部编辑器只读取 `capture` 导出的渲染图，不直接改原始贴图页。
@@ -95,7 +101,7 @@ uv run l2d-mod capture work/base_model -o work/captures
 先运行 `uv run l2d-mod transfer --help` 查看完整参数，再将编辑好的渲染图传给 `transfer` 生成新贴图：
 
 ```bash
-uv run l2d-mod transfer work/base_model --captures work/captures -o work/styled_model
+uv run l2d-mod transfer work/base_model work/styled_model --cap work/body=work/body_edit.png work/head=work/head_edit.png --overrides work/overrides.json
 ```
 
 `transfer` 内部执行两层处理：
@@ -108,7 +114,7 @@ uv run l2d-mod transfer work/base_model --captures work/captures -o work/styled_
 回投完成后，若贴图局部边缘、领口交界或特定小部件需要精确修补，使用 `texels` 对目标贴图页执行确定性的像素微调，避免为小瑕疵反复重跑外部生图。
 
 ```bash
-uv run l2d-mod texels work/styled_model --help
+uv run l2d-mod texels work/styled_model work/final_model work/texels.json
 ```
 
 ### 第 6 步：多姿态与运动验证（必做，禁止只看静态正视图）
@@ -130,7 +136,7 @@ uv run l2d-mod texels work/styled_model --help
 3. **修复跨网格裂纹（`residual_holes`）**：
    - 若在 `blink`、`talk`、`turn_l`、`turn_r`、`sway` 等动作下发现跨独立运动网格的小图案发生撕裂或错位，用 `pick` 定位对应网格或贴图区域，在 `transfer` 配置中将其加入 `residual_holes`。
    - 重跑 `transfer` 以排除该处高频残差并恢复阶段一的平滑基础着色，随后重新渲染动作表确认裂纹消失。
-4. **交互预览（可选）**：运行 `uv run l2d-mod serve work/styled_model` 在浏览器中进一步检查连续参数过渡。
+4. **交互预览（可选）**：运行 `uv run l2d-mod serve --model work/styled_model` 在浏览器中进一步检查连续参数过渡。
 
 ### 第 7 步：输出完整模型与安装（`vts`）
 

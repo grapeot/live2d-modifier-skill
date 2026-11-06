@@ -20,6 +20,8 @@
 
 将本仓库的 GitHub URL 交给 Claude Code、Codex、Cursor 或 OpenCode，让它安装仓库根目录下的 `skills/live2d-modifier/SKILL.md`。安装后直接向 Agent 描述改款任务即可：
 
+安装者先读目标工作区的 `AGENTS.md` 或 `CLAUDE.md`，按当地规则把这个根 skill 接入 `rules/skills/INDEX.md` 或现有技能索引；没有索引就添加一条入口指针。不要求特定 Agent 插件格式。实际命令、JSON 配方及迭代方法见 [配方契约](docs/recipes.md)。
+
 ```text
 请使用 live2d-modifier skill，读取 /path/to/model 下的模型，参考 work/style_ref.png 的配色与纹样风格，在 work/output_model 生成改款模型，并完成多姿态动作检查。
 ```
@@ -32,20 +34,22 @@ Agent 也可在完成改款与核验后，将用户自有的改款模型目录�
 
 ```bash
 # 1. 盘点模型部件、网格、参数与贴图页
-uv run l2d-mod inventory /path/to/model -o work/inventory.json
+uv run l2d-mod inventory /path/to/model -o work/inventory
 
 # 2. 检查共享贴图冲突并生成渲染联系表
-uv run l2d-mod conflicts /path/to/model -o work/conflicts.json
+uv run l2d-mod capture /path/to/model work/baseline --size 1152 2048
+uv run l2d-mod conflicts work/baseline
 uv run l2d-mod sheet /path/to/model -o work/baseline_sheet.png
 
 # 3. 基于配置生成工作副本（调整默认参数、隐藏部件或拆分冲突贴图页）
-uv run l2d-mod variant /path/to/model -c work/variant.json -o work/base_model
+uv run l2d-mod variant /path/to/model work/base_model work/variant.json
 
 # 4. 采集全身与头部近景渲染图及屏幕-UV 对应数据
-uv run l2d-mod capture work/base_model -o work/captures
+uv run l2d-mod capture work/base_model work/body --size 1152 2048
+uv run l2d-mod capture work/base_model work/head --size 2048 2048 --zoom 3,0.5,0.2
 
 # 5. 将外部重绘后的图像对齐回投到贴图（详细参数见 l2d-mod transfer --help）
-uv run l2d-mod transfer work/base_model --captures work/captures -o work/styled_model
+uv run l2d-mod transfer work/base_model work/styled_model --cap work/body=work/body_edit.png work/head=work/head_edit.png --overrides work/overrides.json
 
 # 6. 校验二进制结构并渲染多姿态动作表（front/blink/talk/smile/turn_l/turn_r/look_up/sway）
 uv run l2d-mod moc check work/styled_model
@@ -66,12 +70,14 @@ uv run l2d-mod vts work/styled_model --name "StyledModelVariant"
 | `pick` | 查询渲染图指定坐标对应的 `PartExample` / `ArtMeshExample` 标识 |
 | `conflicts` | 检测共用同一块贴图区域的不同网格，定位改色潜在污染点 |
 | `variant` | 在新目录生成模型变体，执行参数默认值、显隐、混合模式、染色与贴图拆页等原位修改 |
-| `page` | 管理与扩充模型贴图页，配合贴图拆分隔离冲突网格 |
+| `page` | 生成配饰方向测试图、纯色背景抠图 |
 | `transfer` | 拟合部件级明暗色彩映射并将 UV 残差回投到贴图（详见 `l2d-mod transfer --help`） |
 | `texels` | 对贴图局部区域进行确定性的像素修补与微调 |
-| `moc check` | 校验 `.moc3` 与 `.model3.json` 的结构完整性与资源引用一致性 |
+| `moc check` | 用 Cubism Core 校验 moc 一致性、加载和默认姿态；检查目录资源引用 |
 | `vts` | 生成新模型名称与 `ModelID`，将改款模型安全导入 VTube Studio |
 | `serve` | 启动本地预览服务，在浏览器中交互检查模型表现 |
+| `motion` | 输出连续转头、眨眼和说话帧，用于检查动作过程 |
+| `package` | 将模型引用资源打成自包含 ZIP，不带运行记录 |
 
 ## 环境要求与安装
 
@@ -86,9 +92,11 @@ uv run l2d-mod vts work/styled_model --name "StyledModelVariant"
 
 ```bash
 # 克隆仓库后安装 Python 环境与 Playwright Chromium
-uv sync
+uv venv
+source .venv/bin/activate
+uv pip install -e '.[dev]'
 uv run playwright install chromium
-npm install
+npm ci
 
 # 验证 CLI 入口
 uv run l2d-mod --help
@@ -96,12 +104,14 @@ uv run l2d-mod --help
 
 ### 提供 Live2D Cubism Core
 
-本项目遵循原厂许可要求，不在代码库或发行包中打包 Live2D Cubism Core。使用前请从 Live2D 官方渠道下载 Cubism SDK for Web，按其许可协议获取 `live2dcubismcore.min.js`，并通过环境变量或命令参数指定路径（详见 `l2d-mod --help`）。
+本项目遵循原厂许可要求，不在代码库或发行包中打包 Live2D Cubism Core。使用前请从 Live2D 官方渠道下载 Cubism SDK for Web，按其许可协议获取 `live2dcubismcore.min.js`，并设置 `L2D_CORE_PATH=/path/to/live2dcubismcore.min.js`。从其他目录运行时，还需设置 `L2D_NODE_MODULES=/path/to/checkout/node_modules`。
 
 ## 适用边界与开源许可
 
 不同 Live2D 模型的拆层粒度、UV 排布密度、正片叠底蒙版以及变形器绑定方式差异较大。本工具的目标是自动化处理色彩拟合、UV 回投与多姿态检验等繁琐环节，但不承诺对所有模型都能全自动一次成功；遇到高密度共用贴图或跨网格大幅变形纹样时，通常需要结合 `conflicts`、`overrides`、`residual_holes` 与 `texels` 迭代调整。
 
 本项目不包含从零建模、自动拆层绑骨、任意骨架拓扑手术或 `.cmo3` 工程文件往返功能。
+
+图像编辑由 Agent 已有的图像技能或人工完成。先固定姿势、轮廓和线稿，再描述新配色与纹样；全身和头部编辑使用同一套风格。重新设计另一个模型时重新盘点部件并生成配方，不复用别的角色的网格 ID。模型相关材料始终留在用户指定的本地工作目录。
 
 仓库内的核心软件自有代码采用 MIT 许可证开源，不包含任何模型文件、贴图、角色配方或专有运行时。改款模型的使用范围仍遵循原模型与所用素材的许可。

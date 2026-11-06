@@ -1,0 +1,131 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Live2D Modifier</title>
+<style>html,body{margin:0;background:transparent}canvas{display:block}</style>
+<script src="../vendor/live2dcubismcore.min.js"></script>
+<script src="../vendor/pixi8.min.js"></script>
+<script src="../vendor/upl_cubism.min.js"></script>
+</head><body>
+<script>
+// Deterministic offline renderer for one Live2D model.
+// No idle motion, no auto blink, no breath. Physics runs only inside render(): a settle phase (default 2 s) or a `sim` schedule.
+window.L2D = {
+  async init(modelUrl, w, h, opts = {}) {
+    if (!this.registered) {
+      PIXI.extensions.add(PIXI.live2d.Live2DPlugin);
+      if (PIXI.live2d.configureCubismSDK) PIXI.live2d.configureCubismSDK({ memorySizeMB: 256 });
+      this.registered = true;
+    }
+    if (this.app) { this.app.destroy(true, { children: true, texture: true }); this.app = null; }
+    this.pidx = null; this.overrides = {};
+    this.app = new PIXI.Application();
+    await this.app.init({ width: w, height: h, backgroundAlpha: 0, preserveDrawingBuffer: true, antialias: false,
+      autoStart: false, resolution: 1, preference: "webgl" });
+    this.app.ticker.stop();
+    document.body.appendChild(this.app.canvas);
+    const model = await PIXI.live2d.Live2DModel.from(modelUrl, { autoUpdate: false, autoHitTest: false, autoFocus: false,
+      textureOptions: { lod: opts.lod !== undefined ? opts.lod : false } });
+    this.model = model;
+    const im = model.internalModel;
+    this.physics = im.physics;           // kept for explicit simulation
+    im.physics = undefined;
+    im.eyeBlink = undefined;
+    im.breath = undefined;
+    if (im.motionManager) { im.motionManager.stopAllMotions(); im.motionManager.update = () => false; }
+    if (opts.nearest && model.textures) {
+      for (const t of model.textures) { try { t.source.scaleMode = "nearest"; t.source.autoGenerateMipmaps = false; } catch (e) {} }
+    }
+    const fit = opts.fit || 0.98;
+    const s = Math.min(w / model.width, h / model.height) * fit;
+    model.scale.set(s);
+    model.x = (w - model.width) / 2 + (opts.dx || 0);
+    model.y = (h - model.height) / 2 + (opts.dy || 0);
+    if (opts.zoom) {  // zoom on a normalized point of the model (cx, cy in 0..1 of the full-body frame)
+      const z = opts.zoom; model.scale.set(s * z);
+      model.x = w / 2 - opts.cx * model.width; model.y = h / 2 - opts.cy * model.height;
+    }
+    this.app.stage.addChild(model);
+    const raw = im.coreModel.getModel();
+    this.defaults = {};
+    for (let i = 0; i < raw.parameters.count; i++) this.defaults[raw.parameters.ids[i]] = raw.parameters.defaultValues[i];
+    return { w: model.width, h: model.height, scale: model.scale.x, x: model.x, y: model.y,
+             params: raw.parameters.count, drawables: raw.drawables.count, hasPhysics: !!this.physics };
+  },
+  _apply(dict) {
+    const P = this.model.internalModel.coreModel.getModel().parameters;
+    if (!this.pidx) { this.pidx = {}; for (let i = 0; i < P.count; i++) this.pidx[P.ids[i]] = i; }
+    for (let i = 0; i < P.count; i++) P.values[i] = P.defaultValues[i];
+    for (const [k, v] of Object.entries(dict)) { const i = this.pidx[k]; if (i !== undefined) P.values[i] = v; }
+  },
+  // params: absolute values (others reset to default each call).
+  // sim: optional [{params, dt, n}] physics schedule; the final segment's params stay applied for the capture.
+  render(params, sim, settle) {
+    const im = this.model.internalModel, cm = im.coreModel;
+    // many rigs route head/eye inputs through physics, so by default hold the pose and let physics settle
+    if ((!sim || !sim.length) && this.physics && settle !== 0) sim = [{ params: {}, dt: 1 / 30, n: settle || 60 }];
+    if (sim && sim.length && this.physics) {
+      for (const seg of sim) {
+        const p = Object.assign({}, params || {}, seg.params || {});
+        for (let k = 0; k < (seg.n || 1); k++) {
+          this._apply(p);
+          this.physics.evaluate(cm, seg.dt || 1 / 30);
+          cm.update();
+        }
+      }
+    } else {
+      this._apply(params || {});
+      cm.update();
+    }
+    this.app.renderer.render(this.app.stage);
+    return this.app.canvas.toDataURL("image/png");
+  },
+  listParams() {
+    const P = this.model.internalModel.coreModel.getModel().parameters, out = [];
+    for (let i = 0; i < P.count; i++) out.push([P.ids[i], P.defaultValues[i], P.minimumValues[i], P.maximumValues[i]]);
+    return out;
+  },
+  drawables() {
+    const raw = this.model.internalModel.coreModel.getModel();
+    const d = raw.drawables, out = [];
+    for (let i = 0; i < d.count; i++) {
+      out.push({ id: d.ids[i], tex: d.textureIndices[i], uv: Array.from(d.vertexUvs[i]), idx: Array.from(d.indices[i]),
+        pos: Array.from(d.vertexPositions[i]), op: d.opacities[i], order: d.renderOrders[i],
+        masks: Array.from(d.masks[i] || []), flags: d.constantFlags[i], dyn: d.dynamicFlags[i],
+        parent: d.parentPartIndices ? d.parentPartIndices[i] : -1 });
+    }
+    const P = raw.parts, parts = [];
+    for (let i = 0; i < P.count; i++) parts.push({ id: P.ids[i], op: P.opacities[i], parent: P.parentIndices ? P.parentIndices[i] : -1 });
+    return { drawables: out, parts };
+  },
+};
+window.READY = true;
+// Interactive entry is separate from the deterministic Playwright interface.
+const requestedModel = new URLSearchParams(location.search).get('model');
+if (requestedModel) {
+  (async () => {
+    await L2D.init(requestedModel, 600, 900, {});
+    const panel = document.createElement('div');
+    panel.style.cssText = 'position:absolute;left:610px;top:8px;width:340px;font:13px sans-serif';
+    document.body.appendChild(panel);
+    const values = {};
+    let running = false, pending = false;
+    const update = async () => {
+      if (running) { pending = true; return; }
+      running = true;
+      do { pending = false; L2D.render(values, null, 60); } while (pending);
+      running = false;
+    };
+    for (const [id, value, min, max] of L2D.listParams()) {
+      const row = document.createElement('label');
+      row.style.display = 'block';
+      row.textContent = id + ' ';
+      const slider = document.createElement('input');
+      slider.type = 'range'; slider.min = min; slider.max = max;
+      slider.step = (max - min) / 200 || 0.01; slider.value = value;
+      slider.oninput = () => { values[id] = Number(slider.value); update(); };
+      row.appendChild(slider); panel.appendChild(row);
+    }
+    await update();
+  })().catch(error => { document.body.append(document.createTextNode(String(error))); });
+}
+</script>
+</body></html>

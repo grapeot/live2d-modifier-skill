@@ -1,0 +1,8 @@
+include LICENSE README.md package.json package-lock.json
+recursive-include skills *.md
+recursive-include docs *.md
+recursive-include scripts *.py
+recursive-include src *.py *.typed *.js *.html
+prune local
+prune node_modules
+prune work
