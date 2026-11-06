@@ -1,6 +1,6 @@
 # 技术设计文档（RFC）：live2d-modifier-skill
 
-- **状态**：草案（基于已验证私有原型整理，公开版待验收）
+- **状态**：已实现；公开版离线测试与独立 Agent 真实模型验收通过
 - **CLI 名称**：`l2d-mod`
 - **Python 包名**：`live2d_modifier`
 - **运行环境**：Python 3.11+（`uv`）、Node.js 18+、Playwright Chromium
@@ -35,14 +35,14 @@ live2d-modifier-skill/
 ├── src/
 │   └── live2d_modifier/
 │       ├── cli.py              # l2d-mod 命令行路由
-│       ├── inventory.py        # 部件、网格、参数与贴图盘点
-│       ├── renderer.py         # Playwright Chromium 渲染、sheet、capture、pick、serve
-│       ├── conflicts.py        # 共享 UV 区域冲突检测
+│       ├── model.py / moc.py   # 部件、网格、参数与贴图盘点
+│       ├── render.py / corr.py # Playwright 渲染与对应关系采集
+│       ├── atlas.py            # 共享 UV 区域冲突检测
 │       ├── variant.py          # 原位模型变体操作（默认参数、hide/unmask/blend、affine/tint、texture/split）
-│       ├── page.py             # 贴图页新增与索引重映射
+│       ├── pages.py            # 纯色底抠图与方向测试图
 │       ├── transfer.py         # 部件颜色映射拟合与 UV 残差回投
 │       ├── texels.py           # 贴图局部像素确定性微调
-│       ├── moc_check.py        # moc3 / model3.json 结构与资源核验
+│       ├── check.py            # moc3 / model3.json 结构与资源核验
 │       └── vts.py              # VTube Studio 独立名称与新 ModelID 安装
 └── tests/                      # 纯 synthetic 数学与贴图测试 fixture（不含任何真实模型）
 ```
@@ -60,10 +60,10 @@ live2d-modifier-skill/
 | `l2d-mod pick` | 输入屏幕坐标，返回该处自顶向下的可见 `ArtMeshExample` 与所属 `PartExample`。 |
 | `l2d-mod conflicts` | 计算各 `ArtMesh` 在贴图 UV 空间的包围盒与三角网格重叠关系，报告共享同一贴图块的异构网格。 |
 | `l2d-mod variant` | 读取 JSON 配置并在新目录生成变体模型，支持修改参数默认值、`hide`/`unmask`/`blend`、`affine`/`tint`、`texture`/`split` 及复用配饰槽位。 |
-| `l2d-mod page` | 在模型中克隆或追加贴图页，并更新指定网格的贴图页索引。 |
+| `l2d-mod page` | 生成方向测试贴图，或对纯色背景配饰图抠图；接入模型由 variant texture/split 完成。 |
 | `l2d-mod transfer` | 将外部编辑后的图像按部件色彩拟合与 UV 残差回投写入贴图（详见 `l2d-mod transfer --help`）。 |
-| `l2d-mod texels` | 按 UV 或像素矩形对指定贴图页执行擦除、填色、羽化或局部拷贝等确定性操作。 |
-| `l2d-mod moc check` | 检查 `.moc3` 文件头、偏移表、参数范围与 `.model3.json` 贴图路径及尺寸一致性。 |
+| `l2d-mod texels` | 按部件 UV 三角形选像素，做色相重映射、饱和度、岛内平滑和均值匹配。 |
+| `l2d-mod moc check` | 调用用户提供的 Cubism Core 检查 moc 一致性、加载和默认姿态 update；目录输入同时检查资源引用。 |
 | `l2d-mod vts` | 复制模型至 VTube Studio 目录，重写模型名称与全新 `ModelID`，保证原模型不受影响。 |
 | `l2d-mod serve` | 启动本地 HTTP 预览服务，方便在浏览器中实时拖动参数并观察运动表现。 |
 
@@ -85,7 +85,7 @@ live2d-modifier-skill/
 
 1. **阶段一：部件级明暗颜色映射（Base Color Transfer）**
    - 对每个 `Part` 或 `ArtMesh`，收集其在 `capture` 视图中的所有可见且未受半透明叠加污染的像素对 $(I_{\text{orig}}, I_{\text{edit}})$。
-   - 在颜色空间拟合鲁棒的明暗与色彩仿射映射 $T_m$，将该映射作用到该网格在贴图 UV 岛内的全部像素（含不可见的遮挡区域），生成底色一致的基础贴图 $B$。
+   - 在颜色空间按亮度分箱拟合鲁棒的 Lab 色差映射 $T_m$，将该映射作用到该网格在贴图 UV 岛内的全部像素（含不可见的遮挡区域），生成底色一致的基础贴图 $B$。
 2. **阶段二：UV 残差反投影（Residual Back-Projection）**
    - 在屏幕空间计算重绘图与基础贴图渲染结果之间的残差 $\Delta = I_{\text{edit}} - \text{Render}(B)$。
    - 利用 `capture` 记录的 $(u, v)$ 映射将 $\Delta$ 反投影回贴图空间，并在有效采样边缘做平滑外推与羽化，叠加到基础贴图 $B$ 上，从而把重绘图中的空间渐变、服饰印花与面部妆容转化为真实贴图像素。
@@ -94,11 +94,11 @@ live2d-modifier-skill/
 ### 4.3 特殊图层控制与撕裂修复（`overrides` 与 `residual_holes`）
 
 - **`overrides`**：针对半透明薄纱、正片叠底（Multiply）阴影层、高光层以及左右对称镜像共用同一块 UV 的网格，在配置中通过 `overrides` 单独指定处理方式（例如仅应用基础色映射、锁定透明度通道、跳过残差回投或指定色彩映射参数）。
-- **`residual_holes`**：外部图像编辑器不了解底层网格拓扑，可能在两个独立运动的 `ArtMesh` 交界处画出连续的小装饰或细碎纹样。静态正视图下看不出异常，但在 `blink`、`talk`、`turn_l`、`turn_r`、`sway` 等动作下会沿网格边界裂开。发现此类裂纹后，将对应贴图区域或网格加入 `residual_holes`，算法会在该区域剔除高频 UV 残差并恢复阶段一的平滑基础着色。
+- **`residual_holes`**：外部图像编辑器不了解底层网格拓扑，可能在两个独立运动的 `ArtMesh` 交界处画出连续的小装饰或细碎纹样。静态正视图下看不出异常，但在 `blink`、`talk`、`turn_l`、`turn_r`、`sway` 等动作下会沿网格边界裂开。发现此类裂纹后，在指定 capture 的像素坐标中圈出多边形，加入 `residual_holes`，算法会在该区域剔除高频 UV 残差并恢复阶段一的平滑基础着色。
 
 ### 4.4 共享贴图冲突拆页（`conflicts` + `variant` / `page`）
 
-部分模型为节省贴图面积，会让无需改色的部件（如画师署名网格 `ArtMeshExample`）与需要重绘的服装共用同一贴图区域。修改前先运行 `conflicts` 检出UV重叠对，再通过 `variant`（`texture`/`split`）或 `page` 新增贴图页并将目标网格指向新页，使署名或原貌部件与重绘服装完全解耦。
+部分模型为节省贴图面积，会让无需改色的部件（如画师署名网格 `ArtMeshExample`）与需要重绘的服装共用同一贴图区域。修改前先运行 `conflicts` 检出UV重叠对，再通过 `variant`（`texture`/`split`）或 `variant` 的 `texture`/`split` 新增贴图页并将目标网格指向新页，使署名或原貌部件与重绘服装完全解耦。
 
 ## 5. 安全与非破坏性设计
 

@@ -1,0 +1,11 @@
+{
+  "name": "live2d-modifier-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pinned browser rendering dependencies; user supplies Cubism Core separately",
+  "license": "MIT",
+  "dependencies": {
+    "pixi.js": "8.22.0",
+    "untitled-pixi-live2d-engine": "1.4.0"
+  }
+}
