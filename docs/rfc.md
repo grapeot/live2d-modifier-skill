@@ -1,6 +1,6 @@
 # 技术设计文档（RFC）：live2d-modifier-skill
 
-- **状态**：草案（基于已验证私有原型整理，公开版待验收）
+- **状态**：已实现；公开版离线测试与独立 Agent 真实模型验收通过
 - **CLI 名称**：`l2d-mod`
 - **Python 包名**：`live2d_modifier`
 - **运行环境**：Python 3.11+（`uv`）、Node.js 18+、Playwright Chromium
