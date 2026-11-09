@@ -239,9 +239,20 @@ def cmd_package(a):
     print(package_model(resolve_model(a.model), a.out))
 
 
+def cmd_resize(a):
+    from .resize import resize_model
+    print(resize_model(resolve_model(a.src), a.dst, a.max_size))
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="l2d-mod", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("resize", help="在新目录缩小 PNG 贴图，保留透明边缘精度与原绑定")
+    s.add_argument("src")
+    s.add_argument("dst")
+    s.add_argument("--max-size", type=int, default=4096, help="贴图最长边上限；小图不放大（默认4096）")
+    s.set_defaults(fn=cmd_resize)
 
     def common_render(sp, size=(900, 1600)):
         sp.add_argument("--size", nargs=2, type=int, default=list(size), metavar=("W", "H"))
