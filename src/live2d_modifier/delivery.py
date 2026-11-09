@@ -9,7 +9,8 @@ from .model import ModelDir
 def resources(model_dir):
     md = ModelDir(model_dir)
     root = md.path.resolve()
-    paths = {md.model3_path.resolve()}
+    # Preserve the logical entry name when the definition itself is a symlink.
+    paths = {root / md.model3_path.name}
 
     file_keys = {"Moc", "Textures", "Physics", "Pose", "DisplayInfo", "UserData", "File", "Sound", "Model", "Icon"}
 

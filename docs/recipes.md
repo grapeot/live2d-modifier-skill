@@ -67,6 +67,8 @@
 
 ## 运动与交付
 
+`resize SOURCE DEST --max-size 4096`：在全新且不重叠的目标目录复制引用资源，仅缩小超限 PNG 页，保持长宽比、小页字节与原绑定。使用浮点预乘 alpha Lanczos，避免 8-bit 透明度还原误差。本地 `texture_resize_manifest.json` 不进模型包。近景验证、隐藏发型恢复、镜像渐变限制与候选版本交接见 [贴图与风格验收](texture_and_style_validation.md)。缩图命令本身不完成视觉或 Core 验收。
+
 `motion SOURCE -o work/frames --frames 48 --fps 12` 生成连续转头、眨眼、说话帧，逐帧查看；可自行用 ffmpeg 合成。通用参数名不一定驱动所有模型，先在 params.tsv 查实并确认转头确实发生，不能把静止模型算作通过。结构修改后 `moc check` 仅是第一关，实际运动与视觉质量仍要审阅。
 
 `package SOURCE -o work/delivery.zip` 解引用贴图链接，只打包模型引用资源、表情与 VTS 配置，排除运行记录。`vts SOURCE --name 新名称` 默认拒绝覆盖已存在目录。上述命令交付用户自己的模型，和 GitHub 软件 release 是两个不同动作。

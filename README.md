@@ -78,6 +78,9 @@ uv run l2d-mod vts work/styled_model --name "StyledModelVariant"
 | `serve` | 启动本地预览服务，在浏览器中交互检查模型表现 |
 | `motion` | 输出连续转头、眨眼和说话帧，用于检查动作过程 |
 | `package` | 将模型引用资源打成自包含 ZIP，不带运行记录 |
+| `resize` | 在新目录按最长边上限缩小 PNG 贴图，使用浮点预乘透明度，不放大小页 |
+
+例如 `uv run l2d-mod resize work/styled_model work/model_4096 --max-size 4096`。缩图后仍需检查结构、动作和透明叠层近景；完整方法见 [贴图缩放与风格验收](docs/texture_and_style_validation.md)。
 
 ## 环境要求与安装
 
