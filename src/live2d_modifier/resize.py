@@ -45,12 +45,18 @@ def resize_model(model_dir, dest, max_size=4096):
     if isinstance(max_size, bool) or not isinstance(max_size, int) or max_size < 1:
         raise ValueError("max_size 必须是正整数")
     md = ModelDir(Path(model_dir).resolve())
-    source, dest = md.path.resolve(), Path(dest).resolve()
+    requested_dest = Path(dest)
+    if requested_dest.is_symlink():
+        raise FileExistsError(f"目标已存在，请换一个新的输出目录: {requested_dest}")
+    source, dest = md.path.resolve(), requested_dest.resolve()
     if source == dest or source.is_relative_to(dest) or dest.is_relative_to(source):
         raise ValueError("源和目标目录不能相同、包含或重叠")
     if dest.exists():
         raise FileExistsError(f"目标已存在，请换一个新的输出目录: {dest}")
     root, files = resources(source)
+    reserved_name = "texture_resize_manifest.json"
+    if any(path.relative_to(root).parts[0].casefold() == reserved_name for path in files):
+        raise ValueError("模型资源与保留清单文件名冲突: texture_resize_manifest.json")
     plan = []
     # Validate every input before creating output; paths are checked by resources().
     for texture in dict.fromkeys(md.textures):

@@ -95,3 +95,46 @@ def test_thin_page_minimum_dimension_and_duplicate_reference(fake_model, tmp_pat
     dest = resize_model(fake_model, tmp_path / 'thin', 4)
     assert Image.open(dest / 'tex/texture_00.png').size == (4, 1)
     assert len(json.loads((dest / 'texture_resize_manifest.json').read_text())['textures']) == 1
+
+
+@pytest.mark.parametrize('name', ['texture_resize_manifest.json', 'Texture_Resize_Manifest.json',
+                                'Texture_Resize_Manifest.json/data.json'])
+def test_manifest_collision_preserves_userdata_and_creates_no_output(fake_model, tmp_path, name):
+    p = fake_model / 'a.model3.json'
+    data = json.loads(p.read_text())
+    data['FileReferences']['UserData'] = name
+    p.write_text(json.dumps(data))
+    userdata = fake_model / name
+    userdata.parent.mkdir(parents=True, exist_ok=True)
+    userdata.write_text('{"Version": 3, "UserData": []}')
+    original = userdata.read_bytes()
+    with pytest.raises(ValueError, match='texture_resize_manifest'):
+        resize_model(fake_model, tmp_path / 'collision')
+    assert userdata.read_bytes() == original
+    assert not (tmp_path / 'collision').exists()
+
+
+def test_model_entry_symlink_keeps_logical_name(fake_model, tmp_path):
+    entry = fake_model / 'a.model3.json'
+    definition = tmp_path / 'definition.json'
+    definition.write_bytes(entry.read_bytes())
+    entry.unlink()
+    entry.symlink_to(definition)
+    dest = resize_model(fake_model, tmp_path / 'linked_entry')
+    from live2d_modifier.model import ModelDir
+    assert ModelDir(dest).model3_path.name == entry.name
+    assert (dest / entry.name).read_bytes() == definition.read_bytes()
+    assert not (dest / entry.name).is_symlink()
+    import zipfile
+    with zipfile.ZipFile(package_model(fake_model, tmp_path / 'linked.zip')) as z:
+        assert f'{fake_model.name}/{entry.name}' in z.namelist()
+
+
+def test_dangling_destination_link_is_not_followed(fake_model, tmp_path):
+    unexpected = tmp_path / 'unexpected'
+    dest = tmp_path / 'destination_link'
+    dest.symlink_to(unexpected)
+    with pytest.raises(FileExistsError):
+        resize_model(fake_model, dest)
+    assert dest.is_symlink()
+    assert not unexpected.exists()
