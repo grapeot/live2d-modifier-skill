@@ -6,7 +6,7 @@ from PIL import Image
 
 from live2d_modifier.cli import main
 from live2d_modifier.delivery import package_model
-from live2d_modifier.resize import resize_model, resize_rgba_float
+from live2d_modifier.resize import pad_transparent_rgb, resize_model, resize_rgba_float
 
 
 def test_low_alpha_constant_color_survives_filtering():
@@ -27,7 +27,26 @@ def test_hidden_rgb_cannot_bleed_into_visible_pixels():
     rgba[4:12, 4:12] = [230, 180, 200, 100]
     out = np.asarray(resize_rgba_float(Image.fromarray(rgba), (9, 9)))
     assert np.max(np.abs(out[out[..., 3] > 1, :3].astype(int) - [230, 180, 200])) <= 1
-    assert (out[out[..., 3] == 0, :3] == 0).all()
+    hidden = out[out[..., 3] == 0, :3].astype(int)
+    assert len(hidden) and np.max(np.abs(hidden - [230, 180, 200])) <= 1
+
+
+def test_transparent_rgb_padding_is_bounded_and_keeps_alpha():
+    rgba = np.zeros((64, 64, 4), np.uint8)
+    rgba[:8, :8] = [230, 180, 200, 100]
+    out = pad_transparent_rgb(rgba, radius=16)
+    assert (out[..., 3] == rgba[..., 3]).all()
+    assert (out[:8, 8:20, :3] == [230, 180, 200]).all()
+    assert (out[40:, 40:, :3] == 0).all()
+    assert (pad_transparent_rgb(np.zeros((4, 4, 4), np.uint8)) == 0).all()
+
+
+def test_hard_edged_translucent_patch_has_no_overshoot_rim():
+    rgba = np.zeros((64, 64, 4), np.uint8)
+    rgba[16:48, 16:48] = [230, 180, 200, 128]
+    out = np.asarray(resize_rgba_float(Image.fromarray(rgba), (32, 32))).astype(int)
+    assert out[..., 3].max() <= 128
+    assert np.max(np.abs(out[out[..., 3] > 0, :3] - [230, 180, 200])) <= 1
 
 
 def test_resize_cli_self_contained_and_package_excludes_manifest(fake_model, tmp_path, monkeypatch):
