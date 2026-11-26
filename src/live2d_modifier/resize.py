@@ -1,9 +1,10 @@
-"""Downsize model textures without an 8-bit premultiply/unmultiply round trip."""
+"""Downsize model textures safely for both premultiplied and straight-alpha samplers."""
 import hashlib
 import json
 import shutil
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -11,24 +12,44 @@ from .delivery import resources
 from .model import ModelDir
 
 
-def resize_rgba_float(image, size):
-    """Filter alpha and premultiplied RGB as float32, then unpremultiply once.
+EDGE_PAD = 16
 
-    Lanczos can overshoot; divide by the un-clipped filtered alpha, then clamp
-    the final straight channels. Filtering happens in encoded RGB, as in Pillow.
+
+def pad_transparent_rgb(rgba, radius=EDGE_PAD):
+    """Give fully transparent texels near visible ones the nearest visible RGB.
+
+    Straight-alpha bilinear sampling (VTube Studio) mixes the RGB of alpha-0
+    neighbours into translucent edges, so black there draws a grey outline.
+    Alpha is untouched; texels farther than ``radius`` stay black.
     """
-    rgba = np.asarray(image.convert("RGBA"))
-    alpha = rgba[..., 3].astype(np.float32) / 255
-    filtered_alpha = np.asarray(Image.fromarray(alpha).resize(size, Image.Resampling.LANCZOS))
-    result = np.empty((size[1], size[0], 4), np.uint8)
-    for c in range(3):
-        channel = rgba[..., c].astype(np.float32) / 255 * alpha
-        filtered = np.asarray(Image.fromarray(channel).resize(size, Image.Resampling.LANCZOS))
-        straight = np.divide(filtered, filtered_alpha, out=np.zeros_like(filtered), where=filtered_alpha > 1e-6)
-        result[..., c] = np.rint(np.clip(straight, 0, 1) * 255).astype(np.uint8)
-    result[..., 3] = np.rint(np.clip(filtered_alpha, 0, 1) * 255).astype(np.uint8)
+    out = rgba.copy()
+    alpha = out[..., 3]
+    transparent = (alpha == 0).astype(np.uint8)
+    if not transparent.any() or transparent.all():
+        return out
+    dist, labels = cv2.distanceTransformWithLabels(transparent, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    take = (transparent > 0) & (dist <= radius)
+    out[take, :3] = out[alpha > 0, :3][labels[take] - 1]
+    return out
+
+
+def resize_rgba_float(image, size):
+    """Area-filter premultiplied float32 RGBA, unpremultiply once, pad edges.
+
+    A box filter cannot overshoot, unlike Lanczos, which leaves a pale rim on
+    hard-edged translucent patches. Filtering happens in encoded RGB.
+    """
+    rgba = np.asarray(image.convert("RGBA")).astype(np.float32) / 255
+    alpha = rgba[..., 3:]
+    premultiplied = np.dstack([rgba[..., :3] * alpha, alpha])
+    shrinking = size[0] < rgba.shape[1] or size[1] < rgba.shape[0]
+    filtered = cv2.resize(premultiplied, tuple(size), interpolation=cv2.INTER_AREA if shrinking else cv2.INTER_LINEAR)
+    filtered = np.clip(filtered.reshape(size[1], size[0], 4), 0, 1)
+    alpha = filtered[..., 3:]
+    straight = np.where(alpha > 1e-6, filtered[..., :3] / np.maximum(alpha, 1e-6), 0)
+    result = np.rint(np.clip(np.dstack([straight, alpha]), 0, 1) * 255).astype(np.uint8)
     result[result[..., 3] == 0, :3] = 0
-    return Image.fromarray(result)
+    return Image.fromarray(pad_transparent_rgb(result))
 
 
 def _sha(path):
@@ -85,6 +106,6 @@ def resize_model(model_dir, dest, max_size=4096):
                      "source_sha256": source_sha, "sha256": _sha(target)})
     # Paths in this local manifest may be private; package excludes this record.
     manifest = {"source": str(source), "max_size": max_size,
-                "method": "float32 premultiplied-alpha Lanczos (encoded RGB)", "textures": rows}
+                "method": "float32 premultiplied-alpha area filter (encoded RGB) + transparent RGB edge padding", "textures": rows}
     (dest / "texture_resize_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     return dest
